@@ -7,7 +7,7 @@ using System.IO;
 using System.Text.Json;
 class Program
 {
-    static DateTime startingFrom = new DateTime(2024,1,23);
+    static DateTime startingFrom = new DateTime(2024,1,23); // Set the date of earliest commit to parse
     static string repoPath = @"C:\source\flatdata-vehicle-inventory"; // Set your repo path here
     static string inventoryFilePath = "inventory.json"; // Path to the inventory json file
     static void Main()
