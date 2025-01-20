@@ -4,28 +4,25 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using CsvHelper;
-using CsvHelper.Configuration;
+using System.Text.Json;
 class Program
 {
+    static DateTime startingFrom = new DateTime(2024,1,23);
     static string repoPath = @"C:\source\flatdata-vehicle-inventory"; // Set your repo path here
-    // Columns:
-    // name,state,vin,year,vehicle,model,engine,transmission,drivetrain,cab,bed,color,interior,base_msrp,total_msrp,availability_date,total_packages,packages,dealerId,url,regionId,lat,long
-    static string existingData = @"combined-allocation-sheet.csv";
-    static string inventoryCsvFilePath = "data/toyota-inventory.csv"; // Path to the inventory CSV file
+    static string inventoryFilePath = "inventory.json"; // Path to the inventory json file
     static void Main()
     {
-        Dictionary<string, (DateTime createdAt, int daysAvailable, List<string> data)> vinData = new Dictionary<string, (DateTime, int, List<string>)>();
+        Dictionary<string, (int daysAvailable, List<string> data)> vinData = new Dictionary<string, (int, List<string>)>();
 
-        LoadExistingData(vinData);
-        Console.WriteLine($"Loaded existing data from the old allocation spreadsheet. {vinData.Count} VINs");
         // Get the commit history for the files
-        List<string> commitHashes = GetAllCommitHashes(repoPath, inventoryCsvFilePath);
+        List<string> commitHashes = GetAllCommitHashes(repoPath, inventoryFilePath, startingFrom);
         commitHashes.Reverse();
         foreach (string commitHash in commitHashes)
         {
+            if (GetCommitDateByHash(commitHash, repoPath) < startingFrom)
+                continue;
             Console.Write($"Processing: {commitHash} ({GetCommitDateByHash(commitHash, repoPath)})");
-            string inventoryContent = GetFileContentAtCommit(repoPath, inventoryCsvFilePath, commitHash);
+            string inventoryContent = GetFileContentAtCommit(repoPath, inventoryFilePath, commitHash);
             ProcessCsvContent(inventoryContent, vinData, commitHash);
             Console.Write($": {vinData.Count} VINs collected so far.\n");
         }
@@ -34,63 +31,16 @@ class Program
         CreateCombinedInventory(repoPath, vinData);
     }
 
-    static void LoadExistingData(Dictionary<string, (DateTime createdAt, int daysAvailable, List<string> data)> vinData) {
-        using (var csv = new CsvReader(new StreamReader(existingData), new CsvConfiguration() { HasHeaderRecord = true }))
-        {
-            var records = csv.GetRecords<dynamic>();
-            foreach (var record in records)
-            {
-                var values = (IDictionary<string, object>)record;
-                string vin = values["vin"].ToString(); // Get VIN by header name
-
-                DateTime createdAt;
-
-                if (!vinData.ContainsKey(vin)) // If VIN is not in the data structure
-                {
-                    createdAt = DateTime.Parse(values["created_at"].ToString().Trim(), CultureInfo.InvariantCulture);
-                    List<string> row = new List<string>() 
-                    {
-                        values["name"].ToString(),
-                        values["state"].ToString(),
-                        values["vin"].ToString(),
-                        values["year"].ToString(),
-                        values["vehicle"].ToString(),
-                        values["model"].ToString(),
-                        "i-FORCE 2.4L Turbocharged Engine".ToString(),
-                        values["transmission"].ToString(),
-                        values["drivetrain"].ToString(),
-                        values["cab"].ToString(),
-                        values["bed"].ToString(),
-                        values["color"].ToString(),
-                        values["interior"].ToString(),
-                        values["base_msrp"].ToString(),
-                        values["total_msrp"].ToString(),
-                        "".ToString(),
-                        $"{values["packages"].ToString().Count(c => c == ',') +1}".ToString(),
-                        values["packages"].ToString(),
-                        00000.ToString(),
-                        values["url"].ToString(),
-                        "0".ToString(),
-                        "".ToString(),
-                        ""
-                    };
-                    var days = (DateTime.Parse(values["Last Updated"].ToString()) - createdAt).Days;
-                    vinData[vin] = (createdAt, days, new List<string>(row));
-                }
-                else // If VIN is already in the data structure
-                {
-                    Console.WriteLine($"Duplicate VIN {vin}");
-                }
-            }
-        }
-    }
-    static List<string> GetAllCommitHashes(string repoPath, string csvFilePath)
+    static List<string> GetAllCommitHashes(string repoPath, string filePath, DateTime sinceDate)
     {
         List<string> commitHashes = new List<string>();
+        // Format the date for the git command
+        string sinceArgument = $"--since=\"{sinceDate:yyyy-MM-dd}\"";
+
         ProcessStartInfo startInfo = new ProcessStartInfo
         {
             FileName = "git",
-            Arguments = $"log --pretty=format:%H {csvFilePath}",
+            Arguments = $"log {sinceArgument} --pretty=format:%H {filePath}",
             RedirectStandardOutput = true,
             WorkingDirectory = repoPath,
             UseShellExecute = false,
@@ -133,42 +83,42 @@ class Program
         }
     }
 
-    static void ProcessCsvContent(string csvContent, Dictionary<string, (DateTime createdAt, int daysAvailable, List<string> data)> vinData, string commitHash)
+     static void ProcessCsvContent(string jsonContent, Dictionary<string, (int daysAvailable, List<string> data)> vinData, string commitHash)
     {
-        using (var reader = new StringReader(csvContent))
-        using (var csv = new CsvReader(reader, new CsvConfiguration() { HasHeaderRecord = true }))
+        using (var reader = new StringReader(jsonContent))
         {
-            var records = csv.GetRecords<dynamic>();
+            
+            var json = reader.ReadToEnd();
+            var records = JsonSerializer.Deserialize<List<Dictionary<string, JsonElement>>>(json);
+           
             foreach (var record in records)
             {
-                var values = (IDictionary<string, object>)record;
-                string vin = values["vin"].ToString(); // Get VIN by header name
-
-                // Check if the vehicle is "tacoma"
-                if (values["vehicle"].ToString() != "tacoma")
+                // Check if the vehicle is "tacoma" and the right year
+                if (record["vehicle"].ToString() != "tacoma" || record["year"].ToString() != "2024")
                 {
-                    continue; // Skip rows that are not Tacoma
+                    continue; // Skip rows that are not 2024 Tacomas
                 }
+                string vin = record["vin"].ToString(); // Get VIN by header name
 
                 DateTime createdAt;
-
                 if (!vinData.ContainsKey(vin)) // If VIN is not in the data structure
                 {
-                    if (values.ContainsKey("created_at")) // If created_at exists
+                    if (record.ContainsKey("created_at")) // If created_at exists
                     {
-                        createdAt = DateTime.Parse(values["created_at"].ToString().Trim(), CultureInfo.InvariantCulture);
+                        createdAt = DateTime.Parse(record["created_at"].ToString().Trim(), CultureInfo.InvariantCulture);
                     }
                     else
                     {
+                        Console.WriteLine("Missing created at");
                         createdAt = GetCommitDateByHash(commitHash, repoPath); // Use commit date if created_at is missing
                     }
 
-                    vinData[vin] = (createdAt, 0, new List<string>(values.Values.Select(v => v.ToString()))); // Initialize daysAvailable to 0
+                    vinData[vin] = ( 0, new List<string>(record.Values.Select(v => v.ToString()))); // Initialize daysAvailable to 0
                 }
                 else // If VIN is already in the data structure
                 {
-                    var (existingCreatedAt, existingDaysAvailable, existingData) = vinData[vin];
-                    vinData[vin] = (existingCreatedAt, existingDaysAvailable + 1, existingData); // Increment daysAvailable
+                    var (existingDaysAvailable, existingData) = vinData[vin];
+                    vinData[vin] = (existingDaysAvailable + 1, existingData); // Increment daysAvailable
                 }
             }
         }
@@ -208,31 +158,28 @@ class Program
         }
     }
 
-   static void CreateCombinedInventory(string repoPath, Dictionary<string, (DateTime createdAt, int daysAvailable, List<string> data)> vinData)
+   static void CreateCombinedInventory(string repoPath, Dictionary<string, (int daysAvailable, List<string> data)> vinData)
 {
     List<string> outputLines = new List<string>();
     
     // Define the expected headers for both inventory and dealer data
     List<string> headers = new List<string>
     {
-        "created_at",
-        "days_available",
-        // Add dealer CSV headers here
-        "name", "state", "vin", "year", "vehicle", "model", "engine", 
+        // Add CSV headers here
+        "dealer", "vin", "year", "vehicle", "model", "engine", 
         "transmission", "drivetrain", "cab", "bed", "color", 
         "interior", "base_msrp", "total_msrp", "availability_date", 
-        "total_packages", "packages", "dealerId", "url", "regionId", 
-        "lat", "long"
+        "total_packages", "packages", "created_at", "days_available"
     };
 
     outputLines.Add(string.Join(",", headers)); // Use defined headers for the output
 
     foreach (var kvp in vinData)
     {
-        var (createdAt, daysAvailable, data) = kvp.Value;
+        var (daysAvailable, data) = kvp.Value;
 
         // Prepare the output line with all original data plus days_available
-        outputLines.Add($"{createdAt.ToString("d")},{daysAvailable}," + string.Join(",", data.Select(d => QuoteIfNecessary(d))));
+        outputLines.Add($"{string.Join(",", data.Select(d => QuoteIfNecessary(d)))},{daysAvailable}");
         
     }
 
