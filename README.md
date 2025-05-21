@@ -8,7 +8,7 @@ Utility to convert individual .json files out of the [KMG Repo](https://github.c
 ### Parameters:
 * Repo Path - Point to your local clone of the KMG repo
 * Filename - inventory.json
-* DateSince - Start reding commits from this day forward
+* DateSince - Start reading commits from this day forward
 
 
 ### Usage:
